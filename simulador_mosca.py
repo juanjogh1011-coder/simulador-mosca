@@ -1,6 +1,7 @@
 import os
 import sys
 import numpy as np
+import imageio
 from dotenv import load_dotenv
 from caveclient import CAVEclient
 import brian2 as b2
@@ -22,30 +23,42 @@ def get_flywire_client():
         print("Autenticación con FlyWire exitosa.")
     except Exception as e:
         print(f"Error de autenticación: {e}")
-        sys.exit(1)
+        print("Continuando sin FlyWire (modo offline)...")
+        return None
     return client
 
 def setup_brian2_network():
     b2.prefs.codegen.target = 'numpy'
     b2.start_scope()
     
-    # Modelo Leaky Integrate-and-Fire
-    tau = 10*b2.ms
+    # Modelo Leaky Integrate-and-Fire — constantes embebidas en el namespace
+    tau    = 10*b2.ms
     v_rest = -65*b2.mV
-    v_th = -50*b2.mV
-    v_reset = -65*b2.mV
+    v_th   = -50*b2.mV
+    v_reset_val = -65*b2.mV
     R = 10*b2.Mohm
+    
+    namespace = {'tau': tau, 'v_rest': v_rest, 'v_th': v_th,
+                 'v_reset_val': v_reset_val, 'R': R}
     
     eqs = '''
     dv/dt = -(v - v_rest)/tau + R*I/tau : volt
     I : amp
     '''
     
-    sensory_group = b2.NeuronGroup(2, eqs, threshold='v > v_th', reset='v = v_reset', method='exact')
+    sensory_group = b2.NeuronGroup(2, eqs,
+                                   threshold='v > v_th',
+                                   reset='v = v_reset_val',
+                                   namespace=namespace,
+                                   method='exact')
     sensory_group.v = v_rest
     sensory_group.I = 0*b2.nA
     
-    motor_group = b2.NeuronGroup(2, eqs, threshold='v > v_th', reset='v = v_reset', method='exact')
+    motor_group = b2.NeuronGroup(2, eqs,
+                                 threshold='v > v_th',
+                                 reset='v = v_reset_val',
+                                 namespace=namespace,
+                                 method='exact')
     motor_group.v = v_rest
     motor_group.I = 0*b2.nA
     
@@ -79,15 +92,16 @@ def main():
     
     # 4. Bucle de Control en Tiempo Real
     print("Iniciando simulación...")
-    num_steps = 50
+    pasos_simulacion = 200
     dt_ms = 10 # 10 ms por iteración
     
     # Preparar acción nula
     action = np.zeros(action_spec.shape, dtype=action_spec.dtype)
     
     prev_counts = np.zeros(2)
+    frames = []
     
-    for step in range(num_steps):
+    for step in range(pasos_simulacion):
         # Extraer ángulos de articulaciones (joints) de MuJoCo
         obs = None
         for k, v in timestep.observation.items():
@@ -118,6 +132,8 @@ def main():
         # Aplicar al modelo
         timestep = env.step(action)
         
+        frames.append(env.physics.render(height=480, width=640, camera_id=0))
+        
         # Mostrar métricas cada 10 iteraciones
         if (step + 1) % 10 == 0:
             print(f"--- Iteración {step + 1} ---")
@@ -125,6 +141,9 @@ def main():
             print(f"Spikes Sensoriales Totales: {np.array(sensory_spikes.count)}")
             print(f"Spikes Motores Totales: {np.array(motor_spikes.count)}")
             print(f"Acción (Torques) aplicada: {action[:2]}...")
+
+    imageio.mimsave('caminata_mosca.mp4', frames, fps=50)
+    print("Video guardado exitosamente como caminata_mosca.mp4")
 
 if __name__ == '__main__':
     main()
